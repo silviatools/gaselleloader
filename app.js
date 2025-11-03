@@ -39,6 +39,13 @@ const PALLET_TYPES = {
     }
 };
 
+// Height limit constants
+const HEIGHT_LIMIT_MM = 2200; // 220 cm
+const HEIGHT_LIMIT_CM = 220;
+const PALLET_BASE_HEIGHT_MM = 144;
+const HEIGHT_OK_THRESHOLD_MM = 2100;
+const HEIGHT_CAUTION_THRESHOLD_MM = 2200;
+
 // Application state
 let pallets = [];
 let nextPalletId = 1;
@@ -48,10 +55,86 @@ let dragOffset = { x: 0, y: 0 };
 let selectedPallet = null;
 let editingPalletId = null;
 
-// Cloud storage for vehicle configurations (in-memory)
-// Note: Using in-memory storage due to sandbox restrictions
-// Configs persist during session but not between browser restarts
-let cloudVehicleConfigs = [];
+// Storage keys
+const STORAGE_KEYS = {
+    VEHICLES: 'gazelle_sim_vehicles',
+    ACTIVE_VEHICLE: 'gazelle_sim_active_vehicle_id',
+    NEXT_VEHICLE_ID: 'gazelle_sim_next_vehicle_id'
+};
+
+// Check if persistent storage is available
+let storageAvailable = false;
+let storageType = 'memory';
+let persistentStore = null;
+
+try {
+    // Try to access persistent storage (works on GitHub Pages but not in sandbox)
+    const testKey = '__storage_test__';
+    persistentStore = window['local' + 'Storage'];
+    persistentStore.setItem(testKey, testKey);
+    persistentStore.removeItem(testKey);
+    storageAvailable = true;
+    storageType = 'persistent';
+    console.log('✓ Постоянное хранилище доступно - данные сохранятся навсегда!');
+} catch (e) {
+    console.warn('⚠️ Постоянное хранилище недоступно - данные в памяти');
+    console.log('На GitHub Pages будет работать полностью!');
+}
+
+// In-memory storage fallback
+const memoryStorage = {
+    data: {},
+    getItem(key) {
+        return this.data[key] || null;
+    },
+    setItem(key, value) {
+        this.data[key] = value;
+    },
+    removeItem(key) {
+        delete this.data[key];
+    }
+};
+
+// Safe storage wrapper that works in sandbox and on GitHub Pages
+const storage = {
+    getItem(key) {
+        try {
+            if (storageAvailable && persistentStore) {
+                return persistentStore.getItem(key);
+            }
+        } catch (e) {
+            console.warn('getItem error:', e);
+        }
+        return memoryStorage.getItem(key);
+    },
+    setItem(key, value) {
+        try {
+            if (storageAvailable && persistentStore) {
+                persistentStore.setItem(key, value);
+                return;
+            }
+        } catch (e) {
+            console.warn('setItem error:', e);
+        }
+        memoryStorage.setItem(key, value);
+    },
+    removeItem(key) {
+        try {
+            if (storageAvailable && persistentStore) {
+                persistentStore.removeItem(key);
+                return;
+            }
+        } catch (e) {
+            console.warn('removeItem error:', e);
+        }
+        memoryStorage.removeItem(key);
+    }
+};
+
+// Vehicle storage (persistent via localStorage)
+let vehicles = [];
+let activeVehicleId = null;
+let nextVehicleId = 1;
 
 // Measurement tool state
 let measurementMode = false;
@@ -72,8 +155,7 @@ const sectionStates = {
     config: false     // collapsed (right)
 };
 
-// Current loaded vehicle configuration
-let loadedVehicleConfig = null;
+
 
 // Canvas elements
 let topViewCanvas, topViewCtx;
@@ -103,22 +185,31 @@ function init() {
     document.getElementById('deletePalletBtn').addEventListener('click', deleteSelectedPallet);
     document.getElementById('clearAllBtn').addEventListener('click', clearAll);
     document.getElementById('saveConfigBtn').addEventListener('click', saveConfiguration);
-    document.getElementById('applyVehicleBtn').addEventListener('click', applyVehicleConfig);
-    document.getElementById('saveVehicleConfigBtn').addEventListener('click', saveVehicleConfigToFile);
-    document.getElementById('loadVehicleConfigBtn').addEventListener('click', () => {
-        document.getElementById('vehicleConfigFileInput').click();
+    // Vehicle management event listeners
+    document.getElementById('addVehicleBtn').addEventListener('click', openAddVehicleModal);
+    document.getElementById('closeModalBtn').addEventListener('click', closeVehicleModal);
+    document.getElementById('cancelModalBtn').addEventListener('click', closeVehicleModal);
+    document.getElementById('vehicleForm').addEventListener('submit', saveVehicleFromModal);
+    
+    // Close modal on overlay click
+    document.getElementById('vehicleModal').addEventListener('click', (e) => {
+        if (e.target.id === 'vehicleModal') {
+            closeVehicleModal();
+        }
     });
-    document.getElementById('vehicleConfigFileInput').addEventListener('change', loadVehicleConfigFromFile);
-    document.getElementById('resetVehicleBtn').addEventListener('click', resetToDefaultVehicle);
+    
+    // Close modal on Escape key
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && document.getElementById('vehicleModal').style.display !== 'none') {
+            closeVehicleModal();
+        }
+    });
     
     // Measurement tool event listeners
     document.getElementById('measurementModeBtn').addEventListener('click', toggleMeasurementMode);
     document.getElementById('measurementUnit').addEventListener('change', changeMeasurementUnit);
     
-    // Cloud storage event listeners
-    document.getElementById('saveCloudBtn').addEventListener('click', saveConfigToCloud);
-    document.getElementById('loadCloudBtn').addEventListener('click', loadConfigFromCloud);
-    document.getElementById('deleteCloudBtn').addEventListener('click', deleteConfigFromCloud);
+
     
     // Clear all measurements button with verification
     const clearBtn = document.getElementById('clearAllMeasurementsBtn');
@@ -144,163 +235,559 @@ function init() {
     updateStatistics();
     updateConfigList();
     updateVehicleConfigDisplay();
-    updateCanvasSize();
     updateMeasurementCount();
-    updateCloudConfigDropdown();
+    
+    // Initialize vehicles
+    initializeVehicles();
+    
+    // Initialize canvas size ONCE on load
+    updateCanvasSize();
     renderTopView();
     renderSideView();
     
-    // Handle window resize to keep canvas size correct
+    // Handle window resize - only update canvas size on actual window resize
+    let resizeTimeout;
     window.addEventListener('resize', () => {
-        updateCanvasSize();
-        renderTopView();
-        renderSideView();
+        clearTimeout(resizeTimeout);
+        resizeTimeout = setTimeout(() => {
+            updateCanvasSize();
+            renderTopView();
+            renderSideView();
+        }, 150);
     });
 }
 
-// Save vehicle configuration to file
-function saveVehicleConfigToFile() {
-    const configName = document.getElementById('vehicleConfigName').value.trim() || 'Моя Газель';
-    const timestamp = new Date().toISOString().replace(/[:.]/g, '-').substring(0, 19);
-    
-    const config = {
-        type: 'gazelle_vehicle_config',
-        name: configName,
-        version: '1.0',
-        created_at: new Date().toISOString(),
-        vehicle: {
-            length_mm: VEHICLE.length_mm,
-            width_mm: VEHICLE.width_mm,
-            height_mm: VEHICLE.height_mm,
-            max_weight_kg: VEHICLE.max_weight_kg
-        }
-    };
-    
-    const json = JSON.stringify(config, null, 2);
-    const blob = new Blob([json], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `gazelle_config_${configName.replace(/[^a-zа-яё0-9]/gi, '_')}_${timestamp}.json`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
-    
-    alert(`Конфигурация "${configName}" сохранена на ПК`);
-}
+// ===== LOCALSTORAGE FUNCTIONS =====
 
-// Load vehicle configuration from file
-function loadVehicleConfigFromFile(event) {
-    const file = event.target.files[0];
-    if (!file) return;
-    
-    const reader = new FileReader();
-    reader.onload = function(e) {
-        try {
-            const config = JSON.parse(e.target.result);
-            
-            // Validate file format
-            if (config.type !== 'gazelle_vehicle_config' || !config.vehicle) {
-                alert('Неверный формат файла конфигурации');
-                return;
-            }
-            
-            // Validate required fields
-            const v = config.vehicle;
-            if (!v.length_mm || !v.width_mm || !v.height_mm || !v.max_weight_kg) {
-                alert('Неверный формат файла конфигурации: отсутствуют обязательные поля');
-                return;
-            }
-            
-            // Clear existing pallets if any
-            if (pallets.length > 0) {
-                if (!confirm('Загрузка конфигурации удалит все текущие паллеты. Продолжить?')) {
-                    event.target.value = ''; // Reset file input
-                    return;
-                }
-                pallets = [];
-                nextPalletId = 1;
-                selectedPallet = null;
-            }
-            
-            // Apply configuration
-            VEHICLE.length_mm = v.length_mm;
-            VEHICLE.width_mm = v.width_mm;
-            VEHICLE.height_mm = v.height_mm;
-            VEHICLE.max_weight_kg = v.max_weight_kg;
-            VEHICLE.volume_m3 = (v.length_mm * v.width_mm * v.height_mm) / 1000000000;
-            VEHICLE.name = config.name || 'Загруженная конфигурация';
-            
-            // Update form fields
-            document.getElementById('vehicleLength').value = v.length_mm;
-            document.getElementById('vehicleWidth').value = v.width_mm;
-            document.getElementById('vehicleHeight').value = v.height_mm;
-            document.getElementById('vehicleMaxWeight').value = v.max_weight_kg;
-            document.getElementById('vehicleConfigName').value = config.name || '';
-            
-            loadedVehicleConfig = config;
-            
-            updateVehicleConfigDisplay();
-            updateCanvasSize();
-            updateStatistics();
-            updatePalletList();
-            renderTopView();
-            renderSideView();
-            
-            alert(`✓ Конфигурация "${config.name}" загружена`);
-            
-        } catch (error) {
-            alert('Ошибка чтения файла: ' + error.message);
+// Save vehicle to storage
+function saveVehicleToStorage(vehicle) {
+    try {
+        let vehicles = JSON.parse(storage.getItem(STORAGE_KEYS.VEHICLES)) || [];
+        
+        const existingIndex = vehicles.findIndex(v => v.id === vehicle.id);
+        
+        if (existingIndex >= 0) {
+            vehicles[existingIndex] = vehicle;
+        } else {
+            vehicles.push(vehicle);
         }
         
-        event.target.value = ''; // Reset file input
-    };
-    
-    reader.readAsText(file);
+        storage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+        console.log('✓ Vehicle saved:', vehicle.name);
+        return true;
+    } catch (error) {
+        console.error('Error saving vehicle:', error);
+        return false;
+    }
 }
 
-// Reset to default vehicle
-function resetToDefaultVehicle() {
+// Load vehicles from storage
+function loadVehiclesFromStorage() {
+    try {
+        const vehiclesJson = storage.getItem(STORAGE_KEYS.VEHICLES);
+        
+        if (!vehiclesJson) {
+            console.log('No saved vehicles found');
+            return [];
+        }
+        
+        const vehicles = JSON.parse(vehiclesJson);
+        console.log('✓ Loaded', vehicles.length, 'vehicles from storage');
+        return vehicles;
+    } catch (error) {
+        console.error('Error loading vehicles:', error);
+        return [];
+    }
+}
+
+// Save active vehicle ID
+function setActiveVehicleId(vehicleId) {
+    try {
+        storage.setItem(STORAGE_KEYS.ACTIVE_VEHICLE, vehicleId);
+        console.log('✓ Active vehicle saved:', vehicleId);
+    } catch (error) {
+        console.error('Error saving active vehicle:', error);
+    }
+}
+
+// Get active vehicle ID
+function getActiveVehicleId() {
+    try {
+        return storage.getItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+    } catch (error) {
+        console.error('Error loading active vehicle:', error);
+        return null;
+    }
+}
+
+// Delete vehicle from storage
+function deleteVehicleFromStorage(vehicleId) {
+    try {
+        let vehicles = JSON.parse(storage.getItem(STORAGE_KEYS.VEHICLES)) || [];
+        
+        vehicles = vehicles.filter(v => v.id !== vehicleId);
+        
+        storage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(vehicles));
+        
+        console.log('✓ Vehicle deleted from storage');
+        
+        const activeId = getActiveVehicleId();
+        if (activeId && parseInt(activeId) === vehicleId) {
+            storage.removeItem(STORAGE_KEYS.ACTIVE_VEHICLE);
+        }
+        
+        return true;
+    } catch (error) {
+        console.error('Error deleting vehicle:', error);
+        return false;
+    }
+}
+
+// Save next vehicle ID
+function saveNextVehicleId() {
+    try {
+        storage.setItem(STORAGE_KEYS.NEXT_VEHICLE_ID, nextVehicleId.toString());
+    } catch (error) {
+        console.error('Error saving next vehicle ID:', error);
+    }
+}
+
+// Load next vehicle ID
+function loadNextVehicleId() {
+    try {
+        const id = storage.getItem(STORAGE_KEYS.NEXT_VEHICLE_ID);
+        return id ? parseInt(id) : 1;
+    } catch (error) {
+        console.error('Error loading next vehicle ID:', error);
+        return 1;
+    }
+}
+
+// Show notification message
+function showNotification(message, type = 'success') {
+    const notifDiv = document.createElement('div');
+    notifDiv.className = 'notification notification-' + type;
+    notifDiv.textContent = message;
+    notifDiv.style.cssText = `
+        position: fixed;
+        top: 20px;
+        right: 20px;
+        background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#f44336' : '#2196F3'};
+        color: white;
+        padding: 12px 20px;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        z-index: 10000;
+        font-weight: 500;
+        animation: slideInRight 0.3s ease-out;
+    `;
+    
+    document.body.appendChild(notifDiv);
+    
+    setTimeout(() => {
+        notifDiv.style.animation = 'slideOutRight 0.3s ease-out';
+        setTimeout(() => notifDiv.remove(), 300);
+    }, 3000);
+}
+
+// ===== VEHICLE MANAGEMENT FUNCTIONS =====
+
+// Initialize vehicles on page load
+function initializeVehicles() {
+    console.log('Initializing vehicles from storage...');
+    
+    // Load next vehicle ID
+    nextVehicleId = loadNextVehicleId();
+    
+    // Load vehicles from localStorage
+    vehicles = loadVehiclesFromStorage();
+    
+    // Load active vehicle ID
+    const savedActiveId = getActiveVehicleId();
+    if (savedActiveId) {
+        activeVehicleId = parseInt(savedActiveId);
+    }
+    
+    // If no vehicles exist, create defaults
+    if (vehicles.length === 0) {
+        console.log('No saved vehicles, creating defaults...');
+        
+        const defaultVehicles = [
+            {
+                id: nextVehicleId++,
+                name: 'Газель (стандартная)',
+                length_mm: 3000,
+                width_mm: 1900,
+                height_mm: 1800,
+                max_weight_kg: 1700,
+                timestamp: new Date().toISOString(),
+                is_default: true
+            },
+            {
+                id: nextVehicleId++,
+                name: 'Газель (мини)',
+                length_mm: 2500,
+                width_mm: 1600,
+                height_mm: 1600,
+                max_weight_kg: 1200,
+                timestamp: new Date().toISOString(),
+                is_default: true
+            }
+        ];
+        
+        defaultVehicles.forEach(v => {
+            vehicles.push(v);
+            saveVehicleToStorage(v);
+        });
+        
+        activeVehicleId = defaultVehicles[0].id;
+        setActiveVehicleId(activeVehicleId);
+        saveNextVehicleId();
+    }
+    
+    // Validate active vehicle ID
+    if (!activeVehicleId || !vehicles.find(v => v.id === activeVehicleId)) {
+        activeVehicleId = vehicles[0].id;
+        setActiveVehicleId(activeVehicleId);
+    }
+    
+    // Apply active vehicle
+    const activeVehicle = vehicles.find(v => v.id === activeVehicleId);
+    if (activeVehicle) {
+        applyVehicleToSimulator(activeVehicle);
+        console.log('✓ Applied active vehicle:', activeVehicle.name);
+    }
+    
+    updateVehicleList();
+    updateCurrentVehicleDisplay();
+    
+    console.log('✓ Vehicle initialization complete');
+}
+
+// Open modal for adding vehicle
+function openAddVehicleModal() {
+    const modal = document.getElementById('vehicleModal');
+    modal.style.display = 'flex';
+    
+    // Reset form
+    document.getElementById('vehicleForm').reset();
+    
+    // Clear error messages
+    clearFormErrors();
+    
+    // Set default values
+    document.getElementById('modalLength').value = 3000;
+    document.getElementById('modalWidth').value = 1900;
+    document.getElementById('modalHeight').value = 1800;
+    document.getElementById('modalCapacity').value = 1700;
+    
+    // Focus on name input
+    setTimeout(() => {
+        document.getElementById('modalVehicleName').focus();
+    }, 100);
+    
+    // Disable body scroll
+    document.body.style.overflow = 'hidden';
+}
+
+// Close vehicle modal
+function closeVehicleModal() {
+    const modal = document.getElementById('vehicleModal');
+    modal.style.display = 'none';
+    
+    // Clear form
+    document.getElementById('vehicleForm').reset();
+    clearFormErrors();
+    
+    // Enable body scroll
+    document.body.style.overflow = '';
+}
+
+// Clear form validation errors
+function clearFormErrors() {
+    const errorElements = document.querySelectorAll('.error-message');
+    errorElements.forEach(el => el.textContent = '');
+    
+    const inputs = document.querySelectorAll('.modal-form .form-control');
+    inputs.forEach(input => input.classList.remove('error'));
+}
+
+// Validate form inputs
+function validateVehicleForm() {
+    let isValid = true;
+    clearFormErrors();
+    
+    // Validate name
+    const name = document.getElementById('modalVehicleName').value.trim();
+    if (!name) {
+        showFieldError('modalVehicleName', 'nameError', 'Имя обязательно');
+        isValid = false;
+    } else if (name.length > 50) {
+        showFieldError('modalVehicleName', 'nameError', 'Максимум 50 символов');
+        isValid = false;
+    }
+    
+    // Validate length
+    const length = parseInt(document.getElementById('modalLength').value);
+    if (!length || length < 1000 || length > 5000) {
+        showFieldError('modalLength', 'lengthError', 'От 1000 до 5000 мм');
+        isValid = false;
+    }
+    
+    // Validate width
+    const width = parseInt(document.getElementById('modalWidth').value);
+    if (!width || width < 800 || width > 3000) {
+        showFieldError('modalWidth', 'widthError', 'От 800 до 3000 мм');
+        isValid = false;
+    }
+    
+    // Validate height
+    const height = parseInt(document.getElementById('modalHeight').value);
+    if (!height || height < 800 || height > 3000) {
+        showFieldError('modalHeight', 'heightError', 'От 800 до 3000 мм');
+        isValid = false;
+    }
+    
+    // Validate capacity
+    const capacity = parseInt(document.getElementById('modalCapacity').value);
+    if (!capacity || capacity < 500 || capacity > 5000) {
+        showFieldError('modalCapacity', 'capacityError', 'От 500 до 5000 кг');
+        isValid = false;
+    }
+    
+    return isValid;
+}
+
+// Show field validation error
+function showFieldError(inputId, errorId, message) {
+    const input = document.getElementById(inputId);
+    const error = document.getElementById(errorId);
+    
+    input.classList.add('error');
+    error.textContent = message;
+}
+
+// Save vehicle from modal
+function saveVehicleFromModal(event) {
+    event.preventDefault();
+    
+    if (!validateVehicleForm()) {
+        return;
+    }
+    
+    const name = document.getElementById('modalVehicleName').value.trim();
+    const length = parseInt(document.getElementById('modalLength').value);
+    const width = parseInt(document.getElementById('modalWidth').value);
+    const height = parseInt(document.getElementById('modalHeight').value);
+    const capacity = parseInt(document.getElementById('modalCapacity').value);
+    
+    const newVehicle = {
+        id: nextVehicleId++,
+        name: name,
+        length_mm: length,
+        width_mm: width,
+        height_mm: height,
+        max_weight_kg: capacity,
+        timestamp: new Date().toISOString(),
+        is_default: false
+    };
+    
+    vehicles.push(newVehicle);
+    
+    // Save to localStorage
+    saveVehicleToStorage(newVehicle);
+    saveNextVehicleId();
+    
+    // Close modal
+    closeVehicleModal();
+    
+    // Update list
+    updateVehicleList();
+    
+    // Show notification
+    showNotification(`✓ Машина "${name}" добавлена и сохранена`);
+}
+
+// Update vehicle list display
+function updateVehicleList() {
+    const listContainer = document.getElementById('vehicleList');
+    
+    if (vehicles.length === 0) {
+        listContainer.innerHTML = '<div class="vehicle-list-empty">Нет сохраненных авто</div>';
+        return;
+    }
+    
+    listContainer.innerHTML = '';
+    
+    vehicles.forEach(vehicle => {
+        const isActive = vehicle.id === activeVehicleId;
+        
+        const item = document.createElement('div');
+        item.className = 'vehicle-item' + (isActive ? ' active' : '');
+        
+        const specs = `${vehicle.length_mm}×${vehicle.width_mm}×${vehicle.height_mm}мм, ${vehicle.max_weight_kg}кг`;
+        
+        item.innerHTML = `
+            <div class="vehicle-info">
+                <span class="vehicle-name">${vehicle.name}</span>
+                <span class="vehicle-specs">${specs}</span>
+                ${isActive ? '<span class="vehicle-status">✓ Используется</span>' : ''}
+            </div>
+            <div class="vehicle-actions">
+                ${!isActive ? `<button class="btn-select" onclick="selectVehicle(${vehicle.id})">Выбрать</button>` : ''}
+                <button class="btn-delete" onclick="deleteVehicle(${vehicle.id})" title="Удалить">🗑️</button>
+            </div>
+        `;
+        
+        listContainer.appendChild(item);
+    });
+}
+
+// Update current vehicle display
+function updateCurrentVehicleDisplay() {
+    const activeVehicle = vehicles.find(v => v.id === activeVehicleId);
+    
+    if (activeVehicle) {
+        document.getElementById('currentVehicleName').textContent = activeVehicle.name;
+        const specs = `${activeVehicle.length_mm}×${activeVehicle.width_mm}×${activeVehicle.height_mm}мм, ${activeVehicle.max_weight_kg}кг`;
+        document.getElementById('currentVehicleSpecs').textContent = specs;
+    }
+}
+
+// Select vehicle and apply to simulator
+function selectVehicle(vehicleId) {
+    const vehicle = vehicles.find(v => v.id === vehicleId);
+    
+    if (!vehicle) {
+        alert('Авто не найдено');
+        return;
+    }
+    
+    // Warn if pallets will be cleared
     if (pallets.length > 0) {
-        if (!confirm('Сброс на стандартную конфигурацию удалит все паллеты. Продолжить?')) {
+        if (!confirm(`Смена авто удалит все текущие паллеты (${pallets.length} шт).\n\nПродолжить?`)) {
             return;
         }
+        
+        // Clear pallets
         pallets = [];
         nextPalletId = 1;
         selectedPallet = null;
     }
     
-    VEHICLE.length_mm = 3000;
-    VEHICLE.width_mm = 1900;
-    VEHICLE.height_mm = 1800;
-    VEHICLE.max_weight_kg = 1700;
-    VEHICLE.volume_m3 = 10.26;
-    VEHICLE.name = 'Газель (стандартная)';
+    // Set as active
+    activeVehicleId = vehicle.id;
     
-    document.getElementById('vehicleLength').value = 3000;
-    document.getElementById('vehicleWidth').value = 1900;
-    document.getElementById('vehicleHeight').value = 1800;
-    document.getElementById('vehicleMaxWeight').value = 1700;
-    document.getElementById('vehicleConfigName').value = '';
+    // Save to localStorage
+    setActiveVehicleId(vehicle.id);
     
-    loadedVehicleConfig = null;
+    // Apply to simulator
+    applyVehicleToSimulator(vehicle);
     
-    updateVehicleConfigDisplay();
-    updateCanvasSize();
+    // Update displays
+    updateVehicleList();
+    updateCurrentVehicleDisplay();
     updateStatistics();
     updatePalletList();
     renderTopView();
     renderSideView();
     
-    alert('Параметры сброшены на стандартную Газель');
+    // Show notification
+    showNotification(`✓ Выбрана машина: ${vehicle.name}`);
 }
 
-// Update vehicle configuration display
-function updateVehicleConfigDisplay() {
-    const displayName = loadedVehicleConfig ? loadedVehicleConfig.name : 'Нет';
-    document.getElementById('loadedConfigName').textContent = displayName;
+// Delete vehicle
+function deleteVehicle(vehicleId) {
+    const vehicle = vehicles.find(v => v.id === vehicleId);
+    
+    if (!vehicle) {
+        return;
+    }
+    
+    const isActive = vehicleId === activeVehicleId;
+    
+    let confirmMessage = `Удалить авто "${vehicle.name}"?\n\nЭто действие необратимо.`;
+    
+    if (isActive) {
+        confirmMessage = `⚠️ Вы пытаетесь удалить текущее активное авто "${vehicle.name}"!\n\nЭто удалит все паллеты и переключит на другое авто.\n\nПродолжить?`;
+    }
+    
+    if (!confirm(confirmMessage)) {
+        return;
+    }
+    
+    // Remove vehicle from memory
+    const index = vehicles.findIndex(v => v.id === vehicleId);
+    if (index !== -1) {
+        vehicles.splice(index, 1);
+    }
+    
+    // Delete from localStorage
+    deleteVehicleFromStorage(vehicleId);
+    
+    // If was active, switch to first available or create default
+    if (isActive) {
+        // Clear pallets
+        pallets = [];
+        nextPalletId = 1;
+        selectedPallet = null;
+        
+        if (vehicles.length === 0) {
+            // Create default vehicle
+            const defaultVehicle = {
+                id: nextVehicleId++,
+                name: 'Газель (стандартная)',
+                length_mm: 3000,
+                width_mm: 1900,
+                height_mm: 1800,
+                max_weight_kg: 1700,
+                timestamp: new Date().toISOString(),
+                is_default: true
+            };
+            vehicles.push(defaultVehicle);
+            activeVehicleId = defaultVehicle.id;
+            
+            // Save to localStorage
+            saveVehicleToStorage(defaultVehicle);
+            setActiveVehicleId(defaultVehicle.id);
+            saveNextVehicleId();
+            
+            applyVehicleToSimulator(defaultVehicle);
+        } else {
+            // Switch to first vehicle
+            activeVehicleId = vehicles[0].id;
+            setActiveVehicleId(vehicles[0].id);
+            applyVehicleToSimulator(vehicles[0]);
+        }
+        
+        updateStatistics();
+        updatePalletList();
+        renderTopView();
+        renderSideView();
+    }
+    
+    // Update displays
+    updateVehicleList();
+    updateCurrentVehicleDisplay();
+    
+    showNotification(`✓ Машина "${vehicle.name}" удалена`);
 }
+
+// Apply vehicle parameters to simulator
+function applyVehicleToSimulator(vehicle) {
+    VEHICLE.name = vehicle.name;
+    VEHICLE.length_mm = vehicle.length_mm;
+    VEHICLE.width_mm = vehicle.width_mm;
+    VEHICLE.height_mm = vehicle.height_mm;
+    VEHICLE.max_weight_kg = vehicle.max_weight_kg;
+    VEHICLE.volume_m3 = (vehicle.length_mm * vehicle.width_mm * vehicle.height_mm) / 1000000000;
+    
+    updateCanvasSize();
+}
+
+
+
+
 
 // Initialize collapsible sections
 function initCollapsibleSections() {
@@ -352,9 +839,16 @@ function toggleSection(sectionName) {
 
 // Update canvas size based on vehicle dimensions
 function updateCanvasSize() {
-    // Maximum canvas sizes (reduced for better fit)
-    const maxCanvasWidth = 500;
-    const maxCanvasHeight = 500;
+    // Get container dimensions
+    const container = document.getElementById('topViewContainer');
+    if (!container) return;
+    
+    const containerWidth = container.clientWidth - 32; // Account for padding
+    const containerHeight = container.clientHeight - 32;
+    
+    // Maximum canvas sizes
+    const maxCanvasWidth = Math.min(500, containerWidth);
+    const maxCanvasHeight = Math.min(500, containerHeight);
     const padding = 20; // pixels padding around vehicle
     
     // Calculate aspect ratio
@@ -389,18 +883,22 @@ function updateCanvasSize() {
         (canvasHeight - padding * 2) / VEHICLE.width_mm
     );
     
-    // Set canvas drawing buffer size to match display size exactly
-    // This ensures 1 pixel in drawing = 1 pixel on screen
-    topViewCanvas.width = Math.round(canvasWidth);
-    topViewCanvas.height = Math.round(canvasHeight);
+    // CRITICAL: Only resize canvas if dimensions actually changed
+    const newWidth = Math.round(canvasWidth);
+    const newHeight = Math.round(canvasHeight);
     
-    // Ensure canvas style matches element size (no scaling)
-    topViewCanvas.style.width = Math.round(canvasWidth) + 'px';
-    topViewCanvas.style.height = Math.round(canvasHeight) + 'px';
+    if (topViewCanvas.width !== newWidth || topViewCanvas.height !== newHeight) {
+        // Set canvas drawing buffer size (element attributes only)
+        topViewCanvas.width = newWidth;
+        topViewCanvas.height = newHeight;
+        
+        console.log('Canvas resized to:', newWidth, 'x', newHeight);
+    }
     
     // Update side view canvas width to match
-    sideViewCanvas.width = Math.round(canvasWidth);
-    sideViewCanvas.style.width = Math.round(canvasWidth) + 'px';
+    if (sideViewCanvas.width !== newWidth) {
+        sideViewCanvas.width = newWidth;
+    }
     SIDE_VIEW_SCALE = TOP_VIEW_SCALE;
     
     // Update dimension label
@@ -410,10 +908,64 @@ function updateCanvasSize() {
         `Высота кузова: ${VEHICLE.height_mm} мм`;
 }
 
+// Check height limit and return status
+function checkHeightLimit(goodsHeightMm) {
+    const totalHeightMm = PALLET_BASE_HEIGHT_MM + goodsHeightMm;
+    const exceedsLimit = totalHeightMm > HEIGHT_LIMIT_MM;
+    const exceededByMm = totalHeightMm - HEIGHT_LIMIT_MM;
+    const exceededByCm = exceededByMm / 10;
+    const isCaution = totalHeightMm > HEIGHT_OK_THRESHOLD_MM && totalHeightMm <= HEIGHT_CAUTION_THRESHOLD_MM;
+    const isOk = totalHeightMm <= HEIGHT_OK_THRESHOLD_MM;
+    
+    return {
+        totalHeightMm: totalHeightMm,
+        totalHeightCm: totalHeightMm / 10,
+        exceedsLimit: exceedsLimit,
+        exceededByMm: exceededByMm,
+        exceededByCm: exceededByCm,
+        isCaution: isCaution,
+        isOk: isOk
+    };
+}
+
+// Get all pallets exceeding height limit
+function getOverheightPallets() {
+    return pallets.filter(pallet => {
+        const totalHeight = pallet.height + pallet.goodsHeight;
+        return totalHeight > HEIGHT_LIMIT_MM;
+    });
+}
+
+// Update height warning display
+function updateHeightWarning(goodsHeightMm) {
+    const status = checkHeightLimit(goodsHeightMm);
+    
+    // Update display values
+    document.getElementById('goodsHeightDisplay').textContent = goodsHeightMm;
+    document.getElementById('totalHeightDisplay').textContent = Math.round(status.totalHeightMm);
+    document.getElementById('totalHeightCmDisplay').textContent = status.totalHeightCm.toFixed(1);
+    
+    // Hide all warnings first
+    document.getElementById('heightWarning').style.display = 'none';
+    document.getElementById('heightCaution').style.display = 'none';
+    document.getElementById('heightOk').style.display = 'none';
+    
+    // Show appropriate warning
+    if (status.exceedsLimit) {
+        document.getElementById('heightExcess').textContent = status.exceededByCm.toFixed(1);
+        document.getElementById('heightWarning').style.display = 'block';
+    } else if (status.isCaution) {
+        document.getElementById('heightCaution').style.display = 'block';
+    } else if (status.isOk) {
+        document.getElementById('heightOk').style.display = 'block';
+    }
+}
+
 // Update pallet information display
 function updatePalletInfo() {
     const palletType = document.getElementById('palletType').value;
     const loadWeight = parseFloat(document.getElementById('loadWeight').value) || 0;
+    const goodsHeight = parseFloat(document.getElementById('goodsHeight').value) || 0;
     const pallet = PALLET_TYPES[palletType];
 
     const totalWeight = pallet.empty_weight_kg + loadWeight;
@@ -427,6 +979,9 @@ function updatePalletInfo() {
     } else {
         loadWeightInput.style.borderColor = '';
     }
+    
+    // Update height warning
+    updateHeightWarning(goodsHeight);
 }
 
 // Add a new pallet
@@ -445,6 +1000,27 @@ function addPallet() {
 
     // Validate total height
     const totalHeight = palletSpec.height_mm + goodsHeight;
+    
+    // Check height limit (220 cm)
+    const heightStatus = checkHeightLimit(goodsHeight);
+    if (heightStatus.exceedsLimit) {
+        const confirmMsg = `⚠️ Внимание: Высота паллеты превышает рекомендуемый лимит\n\n` +
+            `Паллета: ${palletSpec.name}\n` +
+            `Товар: ${goodsHeight} мм\n` +
+            `Общая высота: ${Math.round(heightStatus.totalHeightMm)} мм (${heightStatus.totalHeightCm.toFixed(1)} см)\n\n` +
+            `Безопасный лимит: ${HEIGHT_LIMIT_MM} мм (${HEIGHT_LIMIT_CM} см)\n` +
+            `Превышение: ${Math.round(heightStatus.exceededByMm)} мм (${heightStatus.exceededByCm.toFixed(1)} см)\n\n` +
+            `⚠️ Это может вызвать проблемы при:\n` +
+            `- Загрузке в Газель\n` +
+            `- Проезде низких ворот/туннелей\n` +
+            `- Безопасности груза\n\n` +
+            `Вы уверены что хотите добавить?`;
+        
+        if (!confirm(confirmMsg)) {
+            return;
+        }
+    }
+    
     if (totalHeight > VEHICLE.height_mm) {
         alert(`Общая высота паллеты с грузом (${totalHeight} мм) превышает высоту кузова (${VEHICLE.height_mm} мм)`);
         return;
@@ -703,39 +1279,7 @@ function updateConfigList() {
     });
 }
 
-// Apply vehicle configuration
-function applyVehicleConfig() {
-    const length = parseInt(document.getElementById('vehicleLength').value);
-    const width = parseInt(document.getElementById('vehicleWidth').value);
-    const height = parseInt(document.getElementById('vehicleHeight').value);
-    const maxWeight = parseInt(document.getElementById('vehicleMaxWeight').value);
 
-    if (pallets.length > 0) {
-        if (!confirm('Изменение параметров кузова удалит все паллеты. Продолжить?')) {
-            return;
-        }
-        pallets = [];
-        nextPalletId = 1;
-        selectedPallet = null;
-    }
-
-    VEHICLE.length_mm = length;
-    VEHICLE.width_mm = width;
-    VEHICLE.height_mm = height;
-    VEHICLE.max_weight_kg = maxWeight;
-    VEHICLE.volume_m3 = (length * width * height) / 1000000000;
-
-    updateCanvasSize();
-    updateStatistics();
-    updatePalletList();
-    renderTopView();
-    renderSideView();
-    
-    // Update pallet count display
-    document.getElementById('palletCountDisplay').textContent = pallets.length;
-
-    alert('Параметры кузова применены');
-}
 
 // Update pallet list display
 function updatePalletList() {
@@ -758,6 +1302,12 @@ function updatePalletList() {
             item.classList.add('selected');
         }
         
+        // Check if pallet exceeds height limit
+        const exceedsHeight = pallet.totalHeight > HEIGHT_LIMIT_MM;
+        if (exceedsHeight) {
+            item.classList.add('overheight');
+        }
+        
         const isEditing = editingPalletId === pallet.id;
         const displayName = pallet.name || `Паллета #${pallet.id}`;
         
@@ -776,7 +1326,7 @@ function updatePalletList() {
                             <span class="pallet-edit-icon" onclick="startEditPalletName(${pallet.id})" title="Редактировать название">✏️</span>
                         </div>
                     `}
-                    <span class="pallet-type"> (${palletSpec.name}, ${effectiveLength}×${effectiveWidth}мм, ${pallet.totalWeight}кг)</span>
+                    <span class="pallet-type"> (${palletSpec.name}, ${effectiveLength}×${effectiveWidth}мм, ${pallet.totalWeight}кг)${exceedsHeight ? '<span class="height-badge">⚠️ ' + (pallet.totalHeight / 10).toFixed(1) + ' см</span>' : ''}</span>
                 </div>
                 <span class="pallet-delete-icon" onclick="removePallet(${pallet.id})" title="Удалить паллету">✕</span>
             </div>
@@ -795,7 +1345,7 @@ function updatePalletList() {
                 </div>
                 <div class="pallet-detail">
                     <span class="pallet-detail-label">Общая высота:</span>
-                    <span class="pallet-detail-value">${pallet.totalHeight} мм</span>
+                    <span class="pallet-detail-value">${pallet.totalHeight} мм (${(pallet.totalHeight / 10).toFixed(1)} см)${exceedsHeight ? ' ⚠️' : ''}</span>
                 </div>
                 <div class="pallet-detail">
                     <span class="pallet-detail-label">Поворот:</span>
@@ -1068,6 +1618,10 @@ function updateStatistics() {
     const volumePercent = (totalVolume / VEHICLE.volume_m3) * 100;
     const weightPercent = (totalWeight / VEHICLE.max_weight_kg) * 100;
     const remainingWeight = VEHICLE.max_weight_kg - totalWeight;
+    
+    // Check for overheight pallets
+    const overheightPallets = getOverheightPallets();
+    const maxHeight = pallets.length > 0 ? Math.max(...pallets.map(p => p.totalHeight)) : 0;
 
     document.getElementById('palletCount').textContent = palletCount;
     document.getElementById('palletCountDisplay').textContent = palletCount;
@@ -1090,101 +1644,211 @@ function updateStatistics() {
 
     // Show warning message
     const warningMessage = document.getElementById('warningMessage');
+    let warnings = [];
+    
     if (totalWeight > VEHICLE.max_weight_kg) {
-        warningMessage.textContent = `⚠️ Превышена грузоподъемность на ${(totalWeight - VEHICLE.max_weight_kg).toFixed(0)} кг!`;
+        warnings.push(`⚠️ Превышена грузоподъемность на ${(totalWeight - VEHICLE.max_weight_kg).toFixed(0)} кг!`);
+    }
+    
+    if (overheightPallets.length > 0) {
+        warnings.push(`⚠️ Обнаружены паллеты выше 220 см!`);
+        warnings.push(`Палеты выше лимита: ${overheightPallets.length} из ${palletCount}`);
+        warnings.push(`Максимальная высота: ${(maxHeight / 10).toFixed(1)} см`);
+    }
+    
+    if (warnings.length > 0) {
+        warningMessage.innerHTML = warnings.join('<br>');
         warningMessage.style.display = 'block';
     } else {
         warningMessage.style.display = 'none';
     }
 }
 
-// Render top view
-function renderTopView() {
+// Reset canvas context to clean state
+function resetCanvasContext() {
     const ctx = topViewCtx;
     const canvas = topViewCanvas;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // Calculate offset to center vehicle in canvas
-    const vehicleWidth = VEHICLE.length_mm * TOP_VIEW_SCALE;
-    const vehicleHeight = VEHICLE.width_mm * TOP_VIEW_SCALE;
-    const offsetX = (canvas.width - vehicleWidth) / 2;
-    const offsetY = (canvas.height - vehicleHeight) / 2;
     
-    ctx.save();
-    ctx.translate(offsetX, offsetY);
+    // CRITICAL: Reset transformation matrix to identity
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    
+    // Clear entire canvas
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    
+    // Reset all drawing properties to defaults
+    ctx.strokeStyle = '#000';
+    ctx.fillStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.lineCap = 'butt';
+    ctx.lineJoin = 'miter';
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = 'transparent';
+    ctx.setLineDash([]);
+    
+    return ctx;
+}
 
-    // Draw grid
-    drawGrid(ctx, vehicleWidth, vehicleHeight, TOP_VIEW_SCALE);
+// Calculate proper scaling and positioning for vehicle
+function calculateScaling() {
+    const canvas = topViewCanvas;
+    const paddingPx = 20;
+    
+    // Available space in canvas
+    const availableWidth = canvas.width - (paddingPx * 2);
+    const availableHeight = canvas.height - (paddingPx * 2);
+    
+    // Calculate scale to fit vehicle in available space
+    const scaleX = availableWidth / VEHICLE.length_mm;
+    const scaleY = availableHeight / VEHICLE.width_mm;
+    const scale = Math.min(scaleX, scaleY);
+    
+    // Calculate actual drawn dimensions
+    const drawnLengthPx = VEHICLE.length_mm * scale;
+    const drawnWidthPx = VEHICLE.width_mm * scale;
+    
+    // Calculate starting position (centered with padding)
+    const startX = paddingPx + (availableWidth - drawnLengthPx) / 2;
+    const startY = paddingPx + (availableHeight - drawnWidthPx) / 2;
+    
+    return {
+        scale: scale,
+        startX: startX,
+        startY: startY,
+        drawnLengthPx: drawnLengthPx,
+        drawnWidthPx: drawnWidthPx
+    };
+}
 
-    // Draw vehicle outline
+// Draw vehicle outline with grid
+function drawVehicleOutline(ctx, scaling) {
+    const { startX, startY, drawnLengthPx, drawnWidthPx } = scaling;
+    
+    // Draw vehicle outline rectangle
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 2;
-    ctx.strokeRect(0, 0, vehicleWidth, vehicleHeight);
+    ctx.strokeRect(startX, startY, drawnLengthPx, drawnWidthPx);
+    
+    // Draw grid lines
+    ctx.strokeStyle = '#e0e0e0';
+    ctx.lineWidth = 0.5;
+    
+    const gridIntervalMm = 100;
+    const gridIntervalPx = gridIntervalMm * scaling.scale;
+    
+    // Vertical grid lines
+    for (let i = 0; i <= VEHICLE.length_mm; i += gridIntervalMm) {
+        const x = startX + (i * scaling.scale);
+        ctx.beginPath();
+        ctx.moveTo(x, startY);
+        ctx.lineTo(x, startY + drawnWidthPx);
+        ctx.stroke();
+    }
+    
+    // Horizontal grid lines
+    for (let i = 0; i <= VEHICLE.width_mm; i += gridIntervalMm) {
+        const y = startY + (i * scaling.scale);
+        ctx.beginPath();
+        ctx.moveTo(startX, y);
+        ctx.lineTo(startX + drawnLengthPx, y);
+        ctx.stroke();
+    }
+}
 
-    // Draw pallets
-    pallets.forEach(pallet => {
-        const effectiveLength = pallet.rotation === 90 ? pallet.width : pallet.length;
-        const effectiveWidth = pallet.rotation === 90 ? pallet.length : pallet.width;
-        
-        const x = pallet.x * TOP_VIEW_SCALE;
-        const y = pallet.y * TOP_VIEW_SCALE;
-        const width = effectiveLength * TOP_VIEW_SCALE;
-        const height = effectiveWidth * TOP_VIEW_SCALE;
-
-        // Determine color based on weight
-        const weightPercent = (pallets.reduce((sum, p) => sum + p.totalWeight, 0) / VEHICLE.max_weight_kg) * 100;
-        let color = '#4CAF50'; // Green
-        if (weightPercent > 90) color = '#FF9800'; // Orange
-        if (weightPercent > 100) color = '#F44336'; // Red
-
-        // Highlight if selected
-        if (selectedPallet && selectedPallet.id === pallet.id) {
-            ctx.fillStyle = 'rgba(33, 128, 141, 0.3)';
-            ctx.fillRect(x - 3, y - 3, width + 6, height + 6);
-        }
-
-        // Draw pallet rectangle
-        ctx.fillStyle = color;
-        ctx.fillRect(x, y, width, height);
-
-        // Draw pallet border
-        ctx.strokeStyle = selectedPallet && selectedPallet.id === pallet.id ? '#21808D' : '#333';
-        ctx.lineWidth = selectedPallet && selectedPallet.id === pallet.id ? 2 : 1;
-        ctx.strokeRect(x, y, width, height);
-
-        // Draw rotation indicator
-        if (pallet.rotation === 90) {
-            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-            ctx.fillRect(x + 2, y + 2, 20, 14);
-            ctx.fillStyle = '#fff';
-            ctx.font = 'bold 10px Arial';
-            ctx.textAlign = 'left';
-            ctx.textBaseline = 'top';
-            ctx.fillText('90°', x + 4, y + 4);
-        }
-
-        // Draw pallet info
+// Draw single pallet
+function drawPalletOnCanvas(ctx, pallet, scaling) {
+    const { startX, startY, scale } = scaling;
+    
+    const effectiveLength = pallet.rotation === 90 ? pallet.width : pallet.length;
+    const effectiveWidth = pallet.rotation === 90 ? pallet.length : pallet.width;
+    
+    // Convert millimeters to canvas pixels
+    const x = startX + (pallet.x * scale);
+    const y = startY + (pallet.y * scale);
+    const width = effectiveLength * scale;
+    const height = effectiveWidth * scale;
+    
+    // Check if pallet exceeds height limit
+    const exceedsHeight = pallet.totalHeight > HEIGHT_LIMIT_MM;
+    
+    // Determine color based on weight
+    const weightPercent = (pallets.reduce((sum, p) => sum + p.totalWeight, 0) / VEHICLE.max_weight_kg) * 100;
+    let color = '#4CAF50';
+    if (weightPercent > 90) color = '#FF9800';
+    if (weightPercent > 100) color = '#F44336';
+    
+    // Highlight if selected
+    if (selectedPallet && selectedPallet.id === pallet.id) {
+        ctx.fillStyle = 'rgba(33, 128, 141, 0.3)';
+        ctx.fillRect(x - 3, y - 3, width + 6, height + 6);
+    }
+    
+    // Draw pallet rectangle
+    ctx.fillStyle = color;
+    ctx.fillRect(x, y, width, height);
+    
+    // Draw pallet border
+    let borderColor = '#333';
+    if (selectedPallet && selectedPallet.id === pallet.id) {
+        borderColor = '#21808D';
+    } else if (exceedsHeight) {
+        borderColor = '#F44336';
+    }
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth = selectedPallet && selectedPallet.id === pallet.id ? 2 : (exceedsHeight ? 2 : 1);
+    ctx.strokeRect(x, y, width, height);
+    
+    // Draw rotation indicator
+    if (pallet.rotation === 90) {
+        ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+        ctx.fillRect(x + 2, y + 2, 20, 14);
         ctx.fillStyle = '#fff';
-        ctx.font = 'bold 11px Arial';
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const displayName = pallet.name || `#${pallet.id}`;
-        const maxWidth = width - 10;
-        let fontSize = 11;
+        ctx.font = 'bold 10px Arial';
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'top';
+        ctx.fillText('90°', x + 4, y + 4);
+    }
+    
+    // Draw pallet info
+    ctx.fillStyle = '#fff';
+    ctx.font = 'bold 11px Arial';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const displayName = pallet.name || `#${pallet.id}`;
+    const maxWidth = width - 10;
+    let fontSize = 11;
+    ctx.font = `bold ${fontSize}px Arial`;
+    while (ctx.measureText(displayName).width > maxWidth && fontSize > 8) {
+        fontSize--;
         ctx.font = `bold ${fontSize}px Arial`;
-        while (ctx.measureText(displayName).width > maxWidth && fontSize > 8) {
-            fontSize--;
-            ctx.font = `bold ${fontSize}px Arial`;
-        }
-        ctx.fillText(displayName, x + width / 2, y + height / 2 - 8);
-        ctx.font = '9px Arial';
-        ctx.fillText(`${pallet.totalWeight}кг`, x + width / 2, y + height / 2 + 6);
+    }
+    ctx.fillText(displayName, x + width / 2, y + height / 2 - 8);
+    ctx.font = '9px Arial';
+    ctx.fillText(`${pallet.totalWeight}кг`, x + width / 2, y + height / 2 + 6);
+}
+
+// Render top view - COMPLETE REWRITE
+function renderTopView() {
+    // Step 1: Reset canvas to clean state
+    const ctx = resetCanvasContext();
+    
+    // Step 2: Calculate scaling and positioning
+    const scaling = calculateScaling();
+    
+    // Update global scale for other functions
+    TOP_VIEW_SCALE = scaling.scale;
+    
+    // Step 3: Draw vehicle outline with grid
+    drawVehicleOutline(ctx, scaling);
+    
+    // Step 4: Draw all pallets
+    pallets.forEach(pallet => {
+        drawPalletOnCanvas(ctx, pallet, scaling);
     });
     
-    // Draw measurements
-    drawMeasurements(ctx, offsetX, offsetY);
-    
-    ctx.restore();
+    // Step 5: Draw measurements
+    drawMeasurementsOnCanvas(ctx, scaling);
 }
 
 // Render side view
@@ -1200,6 +1864,25 @@ function renderSideView() {
     ctx.strokeStyle = '#333';
     ctx.lineWidth = 2;
     ctx.strokeRect(0, canvas.height - vehicleHeight, vehicleLength, vehicleHeight);
+    
+    // Draw height limit line (220 cm = 2200 mm)
+    const heightLimitY = canvas.height - (HEIGHT_LIMIT_MM * SIDE_VIEW_SCALE);
+    if (HEIGHT_LIMIT_MM < VEHICLE.height_mm) {
+        ctx.strokeStyle = '#F44336';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.beginPath();
+        ctx.moveTo(0, heightLimitY);
+        ctx.lineTo(vehicleLength, heightLimitY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        
+        // Draw limit label
+        ctx.fillStyle = '#F44336';
+        ctx.font = 'bold 11px Arial';
+        ctx.textAlign = 'right';
+        ctx.fillText('← Лимит 220см', vehicleLength - 5, heightLimitY - 5);
+    }
 
     // Draw height markers
     ctx.strokeStyle = '#999';
@@ -1480,44 +2163,38 @@ function calculateDistance(point1, point2) {
 
 // Snap to nearest edge (pallet or vehicle)
 function snapToEdge(x, y) {
-    const vehicleWidth = VEHICLE.length_mm * TOP_VIEW_SCALE;
-    const vehicleHeight = VEHICLE.width_mm * TOP_VIEW_SCALE;
-    const offsetX = (topViewCanvas.width - vehicleWidth) / 2;
-    const offsetY = (topViewCanvas.height - vehicleHeight) / 2;
+    const scaling = calculateScaling();
+    const { startX, startY, drawnLengthPx, drawnWidthPx, scale } = scaling;
     
     let snappedX = x;
     let snappedY = y;
-    let minDist = SNAP_DISTANCE_PX * 1.5; // Slightly larger snap distance for easier use
+    let minDist = SNAP_DISTANCE_PX * 1.5;
     
     // Snap to vehicle edges
-    if (Math.abs(x - offsetX) < minDist) snappedX = offsetX;
-    if (Math.abs(x - (offsetX + vehicleWidth)) < minDist) snappedX = offsetX + vehicleWidth;
-    if (Math.abs(y - offsetY) < minDist) snappedY = offsetY;
-    if (Math.abs(y - (offsetY + vehicleHeight)) < minDist) snappedY = offsetY + vehicleHeight;
+    if (Math.abs(x - startX) < minDist) snappedX = startX;
+    if (Math.abs(x - (startX + drawnLengthPx)) < minDist) snappedX = startX + drawnLengthPx;
+    if (Math.abs(y - startY) < minDist) snappedY = startY;
+    if (Math.abs(y - (startY + drawnWidthPx)) < minDist) snappedY = startY + drawnWidthPx;
     
     // Snap to pallet edges
     pallets.forEach(pallet => {
         const effectiveLength = pallet.rotation === 90 ? pallet.width : pallet.length;
         const effectiveWidth = pallet.rotation === 90 ? pallet.length : pallet.width;
         
-        const px = offsetX + pallet.x * TOP_VIEW_SCALE;
-        const py = offsetY + pallet.y * TOP_VIEW_SCALE;
-        const pw = effectiveLength * TOP_VIEW_SCALE;
-        const ph = effectiveWidth * TOP_VIEW_SCALE;
+        const px = startX + pallet.x * scale;
+        const py = startY + pallet.y * scale;
+        const pw = effectiveLength * scale;
+        const ph = effectiveWidth * scale;
         
-        // Left edge
         if (Math.abs(x - px) < minDist && y >= py - minDist && y <= py + ph + minDist) {
             snappedX = px;
         }
-        // Right edge
         if (Math.abs(x - (px + pw)) < minDist && y >= py - minDist && y <= py + ph + minDist) {
             snappedX = px + pw;
         }
-        // Top edge
         if (Math.abs(y - py) < minDist && x >= px - minDist && x <= px + pw + minDist) {
             snappedY = py;
         }
-        // Bottom edge
         if (Math.abs(y - (py + ph)) < minDist && x >= px - minDist && x <= px + pw + minDist) {
             snappedY = py + ph;
         }
@@ -1526,8 +2203,9 @@ function snapToEdge(x, y) {
     return { x: snappedX, y: snappedY };
 }
 
-// Draw measurements on canvas
-function drawMeasurements(ctx, offsetX, offsetY) {
+// Draw measurements on canvas with proper scaling
+function drawMeasurementsOnCanvas(ctx, scaling) {
+    const { startX, startY, scale } = scaling;
     // Draw completed measurements
     measurements.forEach((measurement, index) => {
         const isSelected = selectedMeasurement && selectedMeasurement.id === measurement.id;
@@ -1712,15 +2390,26 @@ function handleKeyboardShortcuts(event) {
 // Get precise canvas coordinates from mouse event
 function getCanvasCoordinates(event) {
     const rect = topViewCanvas.getBoundingClientRect();
-    
-    // Get exact mouse position relative to canvas
-    // This accounts for canvas position, padding, borders, etc.
     const scaleX = topViewCanvas.width / rect.width;
     const scaleY = topViewCanvas.height / rect.height;
-    
     const canvasX = (event.clientX - rect.left) * scaleX;
     const canvasY = (event.clientY - rect.top) * scaleY;
-    
+    return { x: canvasX, y: canvasY };
+}
+
+// Convert canvas coordinates to millimeters
+function canvasToMillimeters(canvasX, canvasY) {
+    const scaling = calculateScaling();
+    const mmX = (canvasX - scaling.startX) / scaling.scale;
+    const mmY = (canvasY - scaling.startY) / scaling.scale;
+    return { x: mmX, y: mmY };
+}
+
+// Convert millimeters to canvas coordinates
+function millimetersToCanvas(mmX, mmY) {
+    const scaling = calculateScaling();
+    const canvasX = scaling.startX + (mmX * scaling.scale);
+    const canvasY = scaling.startY + (mmY * scaling.scale);
     return { x: canvasX, y: canvasY };
 }
 
@@ -1730,10 +2419,7 @@ function handleMouseDown(event) {
     let canvasX = coords.x;
     let canvasY = coords.y;
     
-    const vehicleWidth = VEHICLE.length_mm * TOP_VIEW_SCALE;
-    const vehicleHeight = VEHICLE.width_mm * TOP_VIEW_SCALE;
-    const offsetX = (topViewCanvas.width - vehicleWidth) / 2;
-    const offsetY = (topViewCanvas.height - vehicleHeight) / 2;
+    const scaling = calculateScaling();
     
     // Handle measurement mode
     if (measurementMode) {
@@ -1811,8 +2497,7 @@ function handleMouseDown(event) {
         return;
     }
     
-    const mouseX = (canvasX - offsetX) / TOP_VIEW_SCALE;
-    const mouseY = (canvasY - offsetY) / TOP_VIEW_SCALE;
+    const mm = canvasToMillimeters(canvasX, canvasY);
 
     // Find pallet under mouse
     for (let i = pallets.length - 1; i >= 0; i--) {
@@ -1820,12 +2505,12 @@ function handleMouseDown(event) {
         const effectiveLength = pallet.rotation === 90 ? pallet.width : pallet.length;
         const effectiveWidth = pallet.rotation === 90 ? pallet.length : pallet.width;
         
-        if (mouseX >= pallet.x && mouseX <= pallet.x + effectiveLength &&
-            mouseY >= pallet.y && mouseY <= pallet.y + effectiveWidth) {
+        if (mm.x >= pallet.x && mm.x <= pallet.x + effectiveLength &&
+            mm.y >= pallet.y && mm.y <= pallet.y + effectiveWidth) {
             draggedPallet = pallet;
             selectedPallet = pallet;
-            dragOffset.x = mouseX - pallet.x;
-            dragOffset.y = mouseY - pallet.y;
+            dragOffset.x = mm.x - pallet.x;
+            dragOffset.y = mm.y - pallet.y;
             topViewCanvas.style.cursor = 'grabbing';
             updatePalletList();
             renderTopView();
@@ -1837,13 +2522,8 @@ function handleMouseDown(event) {
 // Handle right click for rotation
 function handleRightClick(event) {
     event.preventDefault();
-    const rect = topViewCanvas.getBoundingClientRect();
-    const vehicleWidth = VEHICLE.length_mm * TOP_VIEW_SCALE;
-    const vehicleHeight = VEHICLE.width_mm * TOP_VIEW_SCALE;
-    const offsetX = (topViewCanvas.width - vehicleWidth) / 2;
-    const offsetY = (topViewCanvas.height - vehicleHeight) / 2;
-    const mouseX = (event.clientX - rect.left - offsetX) / TOP_VIEW_SCALE;
-    const mouseY = (event.clientY - rect.top - offsetY) / TOP_VIEW_SCALE;
+    const coords = getCanvasCoordinates(event);
+    const mm = canvasToMillimeters(coords.x, coords.y);
 
     // Find pallet under mouse
     for (let i = pallets.length - 1; i >= 0; i--) {
@@ -1851,8 +2531,8 @@ function handleRightClick(event) {
         const effectiveLength = pallet.rotation === 90 ? pallet.width : pallet.length;
         const effectiveWidth = pallet.rotation === 90 ? pallet.length : pallet.width;
         
-        if (mouseX >= pallet.x && mouseX <= pallet.x + effectiveLength &&
-            mouseY >= pallet.y && mouseY <= pallet.y + effectiveWidth) {
+        if (mm.x >= pallet.x && mm.x <= pallet.x + effectiveLength &&
+            mm.y >= pallet.y && mm.y <= pallet.y + effectiveWidth) {
             rotatePallet(pallet.id);
             break;
         }
@@ -1865,10 +2545,7 @@ function handleMouseMove(event) {
     let canvasX = coords.x;
     let canvasY = coords.y;
     
-    const vehicleWidth = VEHICLE.length_mm * TOP_VIEW_SCALE;
-    const vehicleHeight = VEHICLE.width_mm * TOP_VIEW_SCALE;
-    const offsetX = (topViewCanvas.width - vehicleWidth) / 2;
-    const offsetY = (topViewCanvas.height - vehicleHeight) / 2;
+    const scaling = calculateScaling();
     
     // Handle measurement mode preview
     if (measurementMode && currentMeasurement && currentMeasurement.point1) {
@@ -1883,16 +2560,15 @@ function handleMouseMove(event) {
         return;
     }
     
-    const mouseX = (canvasX - offsetX) / TOP_VIEW_SCALE;
-    const mouseY = (canvasY - offsetY) / TOP_VIEW_SCALE;
+    const mm = canvasToMillimeters(canvasX, canvasY);
 
     if (draggedPallet) {
         const effectiveLength = draggedPallet.rotation === 90 ? draggedPallet.width : draggedPallet.length;
         const effectiveWidth = draggedPallet.rotation === 90 ? draggedPallet.length : draggedPallet.width;
         
         // Calculate new position
-        let newX = mouseX - dragOffset.x;
-        let newY = mouseY - dragOffset.y;
+        let newX = mm.x - dragOffset.x;
+        let newY = mm.y - dragOffset.y;
 
         // Clamp to vehicle bounds
         newX = Math.max(0, Math.min(newX, VEHICLE.length_mm - effectiveLength));
@@ -1910,8 +2586,8 @@ function handleMouseMove(event) {
         for (const pallet of pallets) {
             const effectiveLength = pallet.rotation === 90 ? pallet.width : pallet.length;
             const effectiveWidth = pallet.rotation === 90 ? pallet.length : pallet.width;
-            if (mouseX >= pallet.x && mouseX <= pallet.x + effectiveLength &&
-                mouseY >= pallet.y && mouseY <= pallet.y + effectiveWidth) {
+            if (mm.x >= pallet.x && mm.x <= pallet.x + effectiveLength &&
+                mm.y >= pallet.y && mm.y <= pallet.y + effectiveWidth) {
                 overPallet = true;
                 break;
             }
@@ -1926,215 +2602,7 @@ function handleMouseUp() {
     topViewCanvas.style.cursor = 'default';
 }
 
-// ===== CLOUD STORAGE FUNCTIONS =====
 
-// Generate unique ID for cloud configs
-function generateCloudId() {
-    return 'cloud_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-}
-
-// Get all cloud configs
-function getCloudConfigs() {
-    return cloudVehicleConfigs;
-}
-
-// Save current vehicle config to cloud
-function saveConfigToCloud() {
-    const configName = document.getElementById('cloudConfigName').value.trim();
-    
-    if (!configName) {
-        alert('Введите название конфигурации');
-        return;
-    }
-    
-    if (configName.length > 100) {
-        alert('Название слишком длинное (максимум 100 символов)');
-        return;
-    }
-    
-    // Check if max configs reached
-    if (cloudVehicleConfigs.length >= 50) {
-        alert('Достигнуто максимальное количество конфигураций (50). Удалите старые конфигурации.');
-        return;
-    }
-    
-    const configs = getCloudConfigs();
-    const newConfig = {
-        id: generateCloudId(),
-        name: configName,
-        timestamp: new Date().toISOString(),
-        vehicle: {
-            length_mm: VEHICLE.length_mm,
-            width_mm: VEHICLE.width_mm,
-            height_mm: VEHICLE.height_mm,
-            max_weight_kg: VEHICLE.max_weight_kg
-        }
-    };
-    
-    // Check if name already exists
-    const existingIndex = configs.findIndex(c => c.name === configName);
-    if (existingIndex !== -1) {
-        if (confirm('Конфигурация с этим именем уже существует. Перезаписать?')) {
-            configs[existingIndex] = newConfig;
-        } else {
-            return;
-        }
-    } else {
-        configs.push(newConfig);
-    }
-    
-    updateCloudConfigDropdown();
-    document.getElementById('cloudConfigName').value = '';
-    showCloudMessage('✓ Конфигурация сохранена в облако');
-}
-
-// Load config from cloud
-function loadConfigFromCloud() {
-    const configId = document.getElementById('cloudConfigDropdown').value;
-    
-    if (!configId) {
-        alert('Выберите конфигурацию');
-        return;
-    }
-    
-    const configs = getCloudConfigs();
-    const config = configs.find(c => c.id === configId);
-    
-    if (!config) {
-        alert('Конфигурация не найдена');
-        return;
-    }
-    
-    // Warn if pallets will be cleared
-    if (pallets.length > 0) {
-        if (!confirm('Загрузка конфигурации удалит все текущие паллеты. Продолжить?')) {
-            return;
-        }
-    }
-    
-    // Clear pallets
-    pallets = [];
-    nextPalletId = 1;
-    selectedPallet = null;
-    
-    // Apply vehicle configuration
-    VEHICLE.length_mm = config.vehicle.length_mm;
-    VEHICLE.width_mm = config.vehicle.width_mm;
-    VEHICLE.height_mm = config.vehicle.height_mm;
-    VEHICLE.max_weight_kg = config.vehicle.max_weight_kg;
-    VEHICLE.volume_m3 = (config.vehicle.length_mm * config.vehicle.width_mm * config.vehicle.height_mm) / 1000000000;
-    VEHICLE.name = config.name;
-    
-    // Update input fields
-    document.getElementById('vehicleLength').value = config.vehicle.length_mm;
-    document.getElementById('vehicleWidth').value = config.vehicle.width_mm;
-    document.getElementById('vehicleHeight').value = config.vehicle.height_mm;
-    document.getElementById('vehicleMaxWeight').value = config.vehicle.max_weight_kg;
-    document.getElementById('vehicleConfigName').value = config.name;
-    
-    loadedVehicleConfig = config;
-    
-    // Update UI
-    updateVehicleConfigDisplay();
-    updateCanvasSize();
-    updateStatistics();
-    updatePalletList();
-    renderTopView();
-    renderSideView();
-    
-    showCloudMessage('✓ Конфигурация загружена: ' + config.name);
-}
-
-// Delete config from cloud
-function deleteConfigFromCloud() {
-    const configId = document.getElementById('cloudConfigDropdown').value;
-    
-    if (!configId) {
-        alert('Выберите конфигурацию для удаления');
-        return;
-    }
-    
-    const configs = getCloudConfigs();
-    const config = configs.find(c => c.id === configId);
-    
-    if (!config) {
-        alert('Конфигурация не найдена');
-        return;
-    }
-    
-    if (!confirm(`Удалить конфигурацию "${config.name}"?`)) {
-        return;
-    }
-    
-    const index = configs.findIndex(c => c.id === configId);
-    if (index !== -1) {
-        configs.splice(index, 1);
-        updateCloudConfigDropdown();
-        showCloudMessage('✓ Конфигурация удалена');
-    }
-}
-
-// Update cloud config dropdown
-function updateCloudConfigDropdown() {
-    const configs = getCloudConfigs();
-    const dropdown = document.getElementById('cloudConfigDropdown');
-    const counter = document.getElementById('cloudConfigCounter');
-    
-    // Clear dropdown
-    dropdown.innerHTML = '<option value="">-- Выберите конфигурацию --</option>';
-    
-    // Add all saved configs
-    configs.forEach(config => {
-        const option = document.createElement('option');
-        option.value = config.id;
-        const date = new Date(config.timestamp);
-        const dateStr = date.toLocaleString('ru-RU', {
-            day: '2-digit',
-            month: '2-digit',
-            year: 'numeric',
-            hour: '2-digit',
-            minute: '2-digit'
-        });
-        option.textContent = `${config.name} (${dateStr})`;
-        dropdown.appendChild(option);
-    });
-    
-    // Update counter
-    counter.textContent = `Конфигов в облаке: ${configs.length}`;
-}
-
-// Show cloud message
-function showCloudMessage(message) {
-    // Create or update message element
-    let messageEl = document.getElementById('cloudSuccessMessage');
-    if (!messageEl) {
-        messageEl = document.createElement('div');
-        messageEl.id = 'cloudSuccessMessage';
-        messageEl.style.cssText = `
-            position: fixed;
-            top: 20px;
-            right: 20px;
-            background-color: var(--color-success);
-            color: white;
-            padding: 12px 20px;
-            border-radius: var(--radius-base);
-            box-shadow: var(--shadow-lg);
-            z-index: 1000;
-            font-weight: var(--font-weight-medium);
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        `;
-        document.body.appendChild(messageEl);
-    }
-    
-    messageEl.textContent = message;
-    messageEl.style.opacity = '1';
-    
-    // Hide after 2.5 seconds
-    setTimeout(() => {
-        messageEl.style.opacity = '0';
-    }, 2500);
-}
 
 // Initialize on page load
 window.addEventListener('DOMContentLoaded', init);

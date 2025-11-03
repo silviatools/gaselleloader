@@ -15,72 +15,34 @@
         <div class="main-content">
             <!-- Left Column -->
             <div class="left-column">
-                <!-- Block 1: Vehicle Configuration with Save/Load -->
+                <!-- Block 1: Настройки Авто -->
                 <section class="card collapsible-section" data-section="vehicle">
                     <div class="section-header" tabindex="0">
                         <span class="chevron">▼</span>
-                        <h2>Задание параметров Газели</h2>
+                        <h2>🚗 Настройки Авто</h2>
                     </div>
                     <div class="section-content">
-                    <div class="form-group">
-                        <label class="form-label">Название конфигурации Газели</label>
-                        <input type="text" id="vehicleConfigName" class="form-control" placeholder="Моя Газель" maxlength="50">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Длина кузова, мм</label>
-                        <input type="number" id="vehicleLength" class="form-control" value="3000" min="1000" max="6000" step="100">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Ширина кузова, мм</label>
-                        <input type="number" id="vehicleWidth" class="form-control" value="1900" min="1000" max="2500" step="100">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Высота кузова, мм</label>
-                        <input type="number" id="vehicleHeight" class="form-control" value="1800" min="1000" max="3000" step="100">
-                    </div>
-                    <div class="form-group">
-                        <label class="form-label">Максимальная грузоподъемность, кг</label>
-                        <input type="number" id="vehicleMaxWeight" class="form-control" value="1700" min="500" max="5000" step="100">
-                    </div>
-                    <div class="button-group">
-                        <button id="applyVehicleBtn" class="btn btn--primary btn--full-width">Применить</button>
-                        <button id="saveVehicleConfigBtn" class="btn btn--secondary btn--full-width">💾 Сохранить конфигурацию...</button>
-                    </div>
-                    <div class="info-display" style="margin-top: 16px;">
-                        <div class="info-item">
-                            <span class="info-label">Загруженная конфигурация:</span>
-                            <span id="loadedConfigName" class="info-value">Нет</span>
-                        </div>
-                    </div>
-                    <div class="button-group" style="margin-top: 12px;">
-                        <button id="loadVehicleConfigBtn" class="btn btn--outline btn--full-width">📂 Загрузить конфигурацию...</button>
-                        <button id="resetVehicleBtn" class="btn btn--outline btn--full-width">Сбросить на стандартную</button>
-                    </div>
-                    <input type="file" id="vehicleConfigFileInput" accept=".json" style="display: none;">
-                    
-                    <!-- Cloud Storage Section -->
-                    <div class="cloud-storage-section">
-                        <h3>☁️ Облачное хранилище конфигураций</h3>
+                        <button id="addVehicleBtn" class="btn btn--primary btn--full-width" style="margin-bottom: 16px;">
+                            🚗 Добавить авто
+                        </button>
                         
-                        <label>Сохранить текущую конфигурацию:</label>
-                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                            <input type="text" id="cloudConfigName" class="form-control" placeholder="Название (например: Стандартная)" style="flex: 1;">
-                            <button id="saveCloudBtn" class="btn-cloud-primary">☁️ Сохранить</button>
+                        <div class="info-display" style="margin-bottom: 16px;">
+                            <div class="info-item">
+                                <span class="info-label">Выбранное авто:</span>
+                                <span id="currentVehicleName" class="info-value">Газель (стандартная)</span>
+                            </div>
+                            <div class="info-item" style="margin-top: 8px;">
+                                <span class="info-label">Параметры:</span>
+                                <span id="currentVehicleSpecs" class="info-value">3000×1900×1800мм, 1700кг</span>
+                            </div>
                         </div>
                         
-                        <label>Сохраненные конфигурации:</label>
-                        <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
-                            <select id="cloudConfigDropdown" class="form-control" style="flex: 1; min-width: 200px;">
-                                <option value="">-- Выберите конфигурацию --</option>
-                            </select>
-                            <button id="loadCloudBtn" class="btn-cloud-secondary">📥 Загрузить</button>
-                            <button id="deleteCloudBtn" class="btn-cloud-danger">🗑️ Удалить</button>
+                        <div class="vehicle-list-container">
+                            <label class="form-label">Сохраненные авто:</label>
+                            <div id="vehicleList" class="vehicle-list">
+                                <!-- Vehicle items will be added here dynamically -->
+                            </div>
                         </div>
-                        
-                        <div id="cloudConfigCounter" class="cloud-counter">
-                            Конфигов в облаке: 0
-                        </div>
-                    </div>
                     </div>
                 </section>
                 
@@ -115,6 +77,23 @@
                             <div class="form-group">
                                 <label class="form-label">Высота товара на паллете, мм</label>
                                 <input type="number" id="goodsHeight" class="form-control" value="200" min="0" max="2000" step="50">
+                            </div>
+                            
+                            <!-- Height calculation and warning -->
+                            <div id="heightCalculation" class="height-info">
+                                <div class="height-calc-text">
+                                    Паллета (144 мм) + Товар (<span id="goodsHeightDisplay">200</span> мм) = Всего: <span id="totalHeightDisplay">344</span> мм (<span id="totalHeightCmDisplay">34.4</span> см)
+                                </div>
+                            </div>
+                            <div id="heightWarning" class="height-warning" style="display: none;">
+                                ⚠️ ВНИМАНИЕ: Высота превышает безопасный лимит 220 см!<br>
+                                Превышение: <span id="heightExcess">0</span> см
+                            </div>
+                            <div id="heightCaution" class="height-warning caution" style="display: none;">
+                                ⚠️ Высота близко к лимиту (220 см)
+                            </div>
+                            <div id="heightOk" class="height-ok" style="display: none;">
+                                ✓ Высота в пределах нормы
                             </div>
                             
                             <div class="info-display">
@@ -276,6 +255,52 @@
                     </div>
                 </section>
             </div>
+        </div>
+    </div>
+    
+    <!-- Modal for adding vehicle -->
+    <div id="vehicleModal" class="modal-overlay" style="display: none;">
+        <div class="modal">
+            <div class="modal-header">
+                <h3>🚗 Добавить новое авто</h3>
+                <button class="modal-close" id="closeModalBtn" aria-label="Закрыть">&times;</button>
+            </div>
+            <form id="vehicleForm" class="modal-form">
+                <div class="form-group">
+                    <label for="modalVehicleName">Имя автомобиля</label>
+                    <input type="text" id="modalVehicleName" class="form-control" placeholder="Например: Стандартная Газель" required maxlength="50">
+                    <span class="error-message" id="nameError"></span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="modalLength">Длина кузова, мм</label>
+                    <input type="number" id="modalLength" class="form-control" value="3000" min="1000" max="5000" step="100" required>
+                    <span class="error-message" id="lengthError"></span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="modalWidth">Ширина кузова, мм</label>
+                    <input type="number" id="modalWidth" class="form-control" value="1900" min="800" max="3000" step="100" required>
+                    <span class="error-message" id="widthError"></span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="modalHeight">Высота кузова, мм</label>
+                    <input type="number" id="modalHeight" class="form-control" value="1800" min="800" max="3000" step="100" required>
+                    <span class="error-message" id="heightError"></span>
+                </div>
+                
+                <div class="form-group">
+                    <label for="modalCapacity">Максимальная грузоподъемность, кг</label>
+                    <input type="number" id="modalCapacity" class="form-control" value="1700" min="500" max="5000" step="100" required>
+                    <span class="error-message" id="capacityError"></span>
+                </div>
+                
+                <div class="modal-buttons">
+                    <button type="button" class="btn-cancel" id="cancelModalBtn">Отмена</button>
+                    <button type="submit" class="btn-save">Сохранить</button>
+                </div>
+            </form>
         </div>
     </div>
     
