@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Симулятор загрузки Газели паллетами</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Симулятор загрузки Газели паллетами</h1>
+        </header>
+        
+        <div class="main-content">
+            <!-- Left Column -->
+            <div class="left-column">
+                <!-- Block 1: Vehicle Configuration with Save/Load -->
+                <section class="card collapsible-section" data-section="vehicle">
+                    <div class="section-header" tabindex="0">
+                        <span class="chevron">▼</span>
+                        <h2>Задание параметров Газели</h2>
+                    </div>
+                    <div class="section-content">
+                    <div class="form-group">
+                        <label class="form-label">Название конфигурации Газели</label>
+                        <input type="text" id="vehicleConfigName" class="form-control" placeholder="Моя Газель" maxlength="50">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Длина кузова, мм</label>
+                        <input type="number" id="vehicleLength" class="form-control" value="3000" min="1000" max="6000" step="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Ширина кузова, мм</label>
+                        <input type="number" id="vehicleWidth" class="form-control" value="1900" min="1000" max="2500" step="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Высота кузова, мм</label>
+                        <input type="number" id="vehicleHeight" class="form-control" value="1800" min="1000" max="3000" step="100">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">Максимальная грузоподъемность, кг</label>
+                        <input type="number" id="vehicleMaxWeight" class="form-control" value="1700" min="500" max="5000" step="100">
+                    </div>
+                    <div class="button-group">
+                        <button id="applyVehicleBtn" class="btn btn--primary btn--full-width">Применить</button>
+                        <button id="saveVehicleConfigBtn" class="btn btn--secondary btn--full-width">💾 Сохранить конфигурацию...</button>
+                    </div>
+                    <div class="info-display" style="margin-top: 16px;">
+                        <div class="info-item">
+                            <span class="info-label">Загруженная конфигурация:</span>
+                            <span id="loadedConfigName" class="info-value">Нет</span>
+                        </div>
+                    </div>
+                    <div class="button-group" style="margin-top: 12px;">
+                        <button id="loadVehicleConfigBtn" class="btn btn--outline btn--full-width">📂 Загрузить конфигурацию...</button>
+                        <button id="resetVehicleBtn" class="btn btn--outline btn--full-width">Сбросить на стандартную</button>
+                    </div>
+                    <input type="file" id="vehicleConfigFileInput" accept=".json" style="display: none;">
+                    </div>
+                </section>
+                
+                <!-- Block 2: Merged Pallet Parameters & Management -->
+                <section class="card collapsible-section" data-section="pallet">
+                    <div class="section-header" tabindex="0">
+                        <span class="chevron">▼</span>
+                        <h2>Параметры паллеты и управление</h2>
+                    </div>
+                    <div class="section-content">
+                        <!-- Part A: Pallet Parameters -->
+                        <div class="merged-part merged-part-a">
+                            <div class="form-group">
+                                <label class="form-label">Имя паллеты (необязательно)</label>
+                                <input type="text" id="palletName" class="form-control" placeholder="Например: Груз А">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Тип паллеты</label>
+                                <select id="palletType" class="form-control">
+                                    <option value="eur1" selected>EUR-1 (1200×800×144 мм)</option>
+                                    <option value="eur2">EUR-2 (1200×1000×144 мм)</option>
+                                    <option value="eur6">EUR-6 (600×800×144 мм)</option>
+                                </select>
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Вес груза на паллете, кг</label>
+                                <input type="number" id="loadWeight" class="form-control" value="500" min="0" step="10">
+                            </div>
+                            
+                            <div class="form-group">
+                                <label class="form-label">Высота товара на паллете, мм</label>
+                                <input type="number" id="goodsHeight" class="form-control" value="200" min="0" max="2000" step="50">
+                            </div>
+                            
+                            <div class="info-display">
+                                <div class="info-item">
+                                    <span class="info-label">Общий вес паллеты:</span>
+                                    <span id="totalPalletWeight" class="info-value">525 кг</span>
+                                </div>
+                                <div class="info-item">
+                                    <span class="info-label">Максимум на 1 паллету:</span>
+                                    <span id="maxPalletCapacity" class="info-value">1500 кг</span>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Divider -->
+                        <div class="merged-divider">
+                            <span>Управление</span>
+                        </div>
+                        
+                        <!-- Part B: Pallet Management -->
+                        <div class="merged-part merged-part-b">
+                            <div class="button-group">
+                                <button id="addPalletBtn" class="btn btn--primary btn--full-width">➕ Добавить паллету</button>
+                                <button id="rotatePalletBtn" class="btn btn--secondary btn--full-width">🔄 Повернуть выбранную</button>
+                                <button id="deletePalletBtn" class="btn btn--secondary btn--full-width">🗑️ Удалить выбранную</button>
+                                <button id="clearAllBtn" class="btn btn--outline btn--full-width">⚠️ Очистить все</button>
+                            </div>
+                            <div class="info-display" style="margin-top: 16px;">
+                                <div class="info-item">
+                                    <span class="info-label">Количество паллет:</span>
+                                    <span id="palletCountDisplay" class="info-value">0</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </div>
+            
+            <!-- Center Column -->
+            <div class="center-column">
+                <!-- Measurement Tool Controls -->
+                <section class="card measurement-controls-card">
+                    <div class="measurement-controls-header">
+                        <button id="measurementModeBtn" class="btn btn--secondary measurement-toggle-btn">
+                            📏 Режим измерения
+                        </button>
+                        <div class="measurement-options">
+                            <select id="measurementUnit" class="form-control measurement-unit-select">
+                                <option value="cm">Сантиметры (см)</option>
+                                <option value="mm">Миллиметры (мм)</option>
+                            </select>
+                            <span id="measurementCount" class="measurement-count">Измерений: 0</span>
+                        </div>
+                    </div>
+                    <div class="measurement-clear-row">
+                        <button id="clearAllMeasurementsBtn" class="btn btn--warning btn--full-width">
+                            🗑️ Очистить все измерения
+                        </button>
+                    </div>
+                    <div id="measurementHint" class="measurement-hint" style="display: none;">
+                        Нажмите две точки для измерения • Кликните на линию чтобы выбрать • Delete для удаления
+                    </div>
+                </section>
+                
+                <section class="card visualization-card">
+                    <h2>Вид сверху (Top View)</h2>
+                    <div class="canvas-container" id="topViewContainer">
+                        <canvas id="topViewCanvas" width="800" height="600"></canvas>
+                    </div>
+                    <div class="legend">
+                        <span id="vehicleDimensionsLabel">L: 3000мм × W: 1900мм | Масштаб: 1 клетка = 100 мм</span>
+                    </div>
+                </section>
+                
+                <section class="card visualization-card">
+                    <h2>Вид сбоку (Side View)</h2>
+                    <div class="canvas-container">
+                        <canvas id="sideViewCanvas" width="800" height="250"></canvas>
+                    </div>
+                    <div class="legend">
+                        <span id="vehicleHeightLabel">Высота кузова: 1800 мм</span>
+                    </div>
+                </section>
+            </div>
+            
+            <!-- Right Column -->
+            <div class="right-column">
+                <!-- Block 1: Pallet List -->
+                <section class="card collapsible-section" data-section="pallets">
+                    <div class="section-header" tabindex="0">
+                        <span class="chevron">▼</span>
+                        <h2>Список паллет</h2>
+                    </div>
+                    <div class="section-content">
+                    <div id="palletList" class="pallet-list">
+                        <div class="pallet-list-empty">Нет загруженных паллет</div>
+                    </div>
+                    </div>
+                </section>
+                
+                <!-- Block 2: Statistics -->
+                <section class="card collapsible-section" data-section="stats">
+                    <div class="section-header" tabindex="0">
+                        <span class="chevron">▼</span>
+                        <h2>Статистика загрузки</h2>
+                    </div>
+                    <div class="section-content">
+                    <div class="stats">
+                        <div class="stat-item">
+                            <span class="stat-label">Количество паллет:</span>
+                            <span id="palletCount" class="stat-value">0</span>
+                        </div>
+                        
+                        <div class="stat-item">
+                            <span class="stat-label">Использовано объема:</span>
+                            <span id="volumeUsed" class="stat-value">0%</span>
+                        </div>
+                        
+                        <div class="progress-bar">
+                            <div id="volumeProgress" class="progress-fill"></div>
+                        </div>
+                        
+                        <div class="stat-item">
+                            <span class="stat-label">Использовано грузоподъемности:</span>
+                            <span id="weightUsed" class="stat-value">0 кг / 1700 кг</span>
+                        </div>
+                        
+                        <div class="progress-bar">
+                            <div id="weightProgress" class="progress-fill"></div>
+                        </div>
+                        
+                        <div class="stat-item">
+                            <span class="stat-label">Осталось грузоподъемности:</span>
+                            <span id="weightRemaining" class="stat-value">1700 кг</span>
+                        </div>
+                        
+                        <div id="warningMessage" class="warning-message" style="display: none;"></div>
+                    </div>
+                    </div>
+                </section>
+                
+                <!-- Block 3: Loading Configuration Management -->
+                <section class="card collapsible-section" data-section="config">
+                    <div class="section-header" tabindex="0">
+                        <span class="chevron">▶</span>
+                        <h2>Управление конфигурациями загрузки</h2>
+                    </div>
+                    <div class="section-content">
+                    <div class="form-group">
+                        <label class="form-label">Имя конфигурации загрузки</label>
+                        <input type="text" id="configName" class="form-control" placeholder="Введите название">
+                    </div>
+                    <div class="button-group">
+                        <button id="saveConfigBtn" class="btn btn--primary btn--full-width">💾 Сохранить как...</button>
+                    </div>
+                    <div id="configList" class="config-list">
+                        <div class="config-list-empty">Нет сохраненных конфигураций</div>
+                    </div>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </div>
+    
+    <script src="app.js"></script>
+</body>
+</html>
