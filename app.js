@@ -48,6 +48,11 @@ let dragOffset = { x: 0, y: 0 };
 let selectedPallet = null;
 let editingPalletId = null;
 
+// Cloud storage for vehicle configurations (in-memory)
+// Note: Using in-memory storage due to sandbox restrictions
+// Configs persist during session but not between browser restarts
+let cloudVehicleConfigs = [];
+
 // Measurement tool state
 let measurementMode = false;
 let measurements = [];
@@ -110,6 +115,11 @@ function init() {
     document.getElementById('measurementModeBtn').addEventListener('click', toggleMeasurementMode);
     document.getElementById('measurementUnit').addEventListener('change', changeMeasurementUnit);
     
+    // Cloud storage event listeners
+    document.getElementById('saveCloudBtn').addEventListener('click', saveConfigToCloud);
+    document.getElementById('loadCloudBtn').addEventListener('click', loadConfigFromCloud);
+    document.getElementById('deleteCloudBtn').addEventListener('click', deleteConfigFromCloud);
+    
     // Clear all measurements button with verification
     const clearBtn = document.getElementById('clearAllMeasurementsBtn');
     if (clearBtn) {
@@ -136,6 +146,7 @@ function init() {
     updateVehicleConfigDisplay();
     updateCanvasSize();
     updateMeasurementCount();
+    updateCloudConfigDropdown();
     renderTopView();
     renderSideView();
     
@@ -1913,6 +1924,216 @@ function handleMouseMove(event) {
 function handleMouseUp() {
     draggedPallet = null;
     topViewCanvas.style.cursor = 'default';
+}
+
+// ===== CLOUD STORAGE FUNCTIONS =====
+
+// Generate unique ID for cloud configs
+function generateCloudId() {
+    return 'cloud_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+}
+
+// Get all cloud configs
+function getCloudConfigs() {
+    return cloudVehicleConfigs;
+}
+
+// Save current vehicle config to cloud
+function saveConfigToCloud() {
+    const configName = document.getElementById('cloudConfigName').value.trim();
+    
+    if (!configName) {
+        alert('Введите название конфигурации');
+        return;
+    }
+    
+    if (configName.length > 100) {
+        alert('Название слишком длинное (максимум 100 символов)');
+        return;
+    }
+    
+    // Check if max configs reached
+    if (cloudVehicleConfigs.length >= 50) {
+        alert('Достигнуто максимальное количество конфигураций (50). Удалите старые конфигурации.');
+        return;
+    }
+    
+    const configs = getCloudConfigs();
+    const newConfig = {
+        id: generateCloudId(),
+        name: configName,
+        timestamp: new Date().toISOString(),
+        vehicle: {
+            length_mm: VEHICLE.length_mm,
+            width_mm: VEHICLE.width_mm,
+            height_mm: VEHICLE.height_mm,
+            max_weight_kg: VEHICLE.max_weight_kg
+        }
+    };
+    
+    // Check if name already exists
+    const existingIndex = configs.findIndex(c => c.name === configName);
+    if (existingIndex !== -1) {
+        if (confirm('Конфигурация с этим именем уже существует. Перезаписать?')) {
+            configs[existingIndex] = newConfig;
+        } else {
+            return;
+        }
+    } else {
+        configs.push(newConfig);
+    }
+    
+    updateCloudConfigDropdown();
+    document.getElementById('cloudConfigName').value = '';
+    showCloudMessage('✓ Конфигурация сохранена в облако');
+}
+
+// Load config from cloud
+function loadConfigFromCloud() {
+    const configId = document.getElementById('cloudConfigDropdown').value;
+    
+    if (!configId) {
+        alert('Выберите конфигурацию');
+        return;
+    }
+    
+    const configs = getCloudConfigs();
+    const config = configs.find(c => c.id === configId);
+    
+    if (!config) {
+        alert('Конфигурация не найдена');
+        return;
+    }
+    
+    // Warn if pallets will be cleared
+    if (pallets.length > 0) {
+        if (!confirm('Загрузка конфигурации удалит все текущие паллеты. Продолжить?')) {
+            return;
+        }
+    }
+    
+    // Clear pallets
+    pallets = [];
+    nextPalletId = 1;
+    selectedPallet = null;
+    
+    // Apply vehicle configuration
+    VEHICLE.length_mm = config.vehicle.length_mm;
+    VEHICLE.width_mm = config.vehicle.width_mm;
+    VEHICLE.height_mm = config.vehicle.height_mm;
+    VEHICLE.max_weight_kg = config.vehicle.max_weight_kg;
+    VEHICLE.volume_m3 = (config.vehicle.length_mm * config.vehicle.width_mm * config.vehicle.height_mm) / 1000000000;
+    VEHICLE.name = config.name;
+    
+    // Update input fields
+    document.getElementById('vehicleLength').value = config.vehicle.length_mm;
+    document.getElementById('vehicleWidth').value = config.vehicle.width_mm;
+    document.getElementById('vehicleHeight').value = config.vehicle.height_mm;
+    document.getElementById('vehicleMaxWeight').value = config.vehicle.max_weight_kg;
+    document.getElementById('vehicleConfigName').value = config.name;
+    
+    loadedVehicleConfig = config;
+    
+    // Update UI
+    updateVehicleConfigDisplay();
+    updateCanvasSize();
+    updateStatistics();
+    updatePalletList();
+    renderTopView();
+    renderSideView();
+    
+    showCloudMessage('✓ Конфигурация загружена: ' + config.name);
+}
+
+// Delete config from cloud
+function deleteConfigFromCloud() {
+    const configId = document.getElementById('cloudConfigDropdown').value;
+    
+    if (!configId) {
+        alert('Выберите конфигурацию для удаления');
+        return;
+    }
+    
+    const configs = getCloudConfigs();
+    const config = configs.find(c => c.id === configId);
+    
+    if (!config) {
+        alert('Конфигурация не найдена');
+        return;
+    }
+    
+    if (!confirm(`Удалить конфигурацию "${config.name}"?`)) {
+        return;
+    }
+    
+    const index = configs.findIndex(c => c.id === configId);
+    if (index !== -1) {
+        configs.splice(index, 1);
+        updateCloudConfigDropdown();
+        showCloudMessage('✓ Конфигурация удалена');
+    }
+}
+
+// Update cloud config dropdown
+function updateCloudConfigDropdown() {
+    const configs = getCloudConfigs();
+    const dropdown = document.getElementById('cloudConfigDropdown');
+    const counter = document.getElementById('cloudConfigCounter');
+    
+    // Clear dropdown
+    dropdown.innerHTML = '<option value="">-- Выберите конфигурацию --</option>';
+    
+    // Add all saved configs
+    configs.forEach(config => {
+        const option = document.createElement('option');
+        option.value = config.id;
+        const date = new Date(config.timestamp);
+        const dateStr = date.toLocaleString('ru-RU', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        });
+        option.textContent = `${config.name} (${dateStr})`;
+        dropdown.appendChild(option);
+    });
+    
+    // Update counter
+    counter.textContent = `Конфигов в облаке: ${configs.length}`;
+}
+
+// Show cloud message
+function showCloudMessage(message) {
+    // Create or update message element
+    let messageEl = document.getElementById('cloudSuccessMessage');
+    if (!messageEl) {
+        messageEl = document.createElement('div');
+        messageEl.id = 'cloudSuccessMessage';
+        messageEl.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: var(--color-success);
+            color: white;
+            padding: 12px 20px;
+            border-radius: var(--radius-base);
+            box-shadow: var(--shadow-lg);
+            z-index: 1000;
+            font-weight: var(--font-weight-medium);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        `;
+        document.body.appendChild(messageEl);
+    }
+    
+    messageEl.textContent = message;
+    messageEl.style.opacity = '1';
+    
+    // Hide after 2.5 seconds
+    setTimeout(() => {
+        messageEl.style.opacity = '0';
+    }, 2500);
 }
 
 // Initialize on page load

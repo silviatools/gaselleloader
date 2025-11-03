@@ -57,6 +57,30 @@
                         <button id="resetVehicleBtn" class="btn btn--outline btn--full-width">Сбросить на стандартную</button>
                     </div>
                     <input type="file" id="vehicleConfigFileInput" accept=".json" style="display: none;">
+                    
+                    <!-- Cloud Storage Section -->
+                    <div class="cloud-storage-section">
+                        <h3>☁️ Облачное хранилище конфигураций</h3>
+                        
+                        <label>Сохранить текущую конфигурацию:</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <input type="text" id="cloudConfigName" class="form-control" placeholder="Название (например: Стандартная)" style="flex: 1;">
+                            <button id="saveCloudBtn" class="btn-cloud-primary">☁️ Сохранить</button>
+                        </div>
+                        
+                        <label>Сохраненные конфигурации:</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap;">
+                            <select id="cloudConfigDropdown" class="form-control" style="flex: 1; min-width: 200px;">
+                                <option value="">-- Выберите конфигурацию --</option>
+                            </select>
+                            <button id="loadCloudBtn" class="btn-cloud-secondary">📥 Загрузить</button>
+                            <button id="deleteCloudBtn" class="btn-cloud-danger">🗑️ Удалить</button>
+                        </div>
+                        
+                        <div id="cloudConfigCounter" class="cloud-counter">
+                            Конфигов в облаке: 0
+                        </div>
+                    </div>
                     </div>
                 </section>
                 
