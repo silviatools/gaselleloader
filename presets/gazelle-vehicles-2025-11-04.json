@@ -1,0 +1,12 @@
+[
+  {
+    "id": 1,
+    "name": "ааа",
+    "length_mm": 3000,
+    "width_mm": 1900,
+    "height_mm": 1800,
+    "max_weight_kg": 1700,
+    "timestamp": "2025-11-04T14:22:32.280Z",
+    "is_default": false
+  }
+]
