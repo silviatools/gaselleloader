@@ -209,6 +209,12 @@ function init() {
     document.getElementById('measurementModeBtn').addEventListener('click', toggleMeasurementMode);
     document.getElementById('measurementUnit').addEventListener('change', changeMeasurementUnit);
     
+    // Import file input event listener
+    const importInput = document.getElementById('importVehicleInput');
+    if (importInput) {
+        importInput.addEventListener('change', handleVehicleFileImport);
+    }
+    
 
     
     // Clear all measurements button with verification
@@ -372,7 +378,7 @@ function showNotification(message, type = 'success') {
         position: fixed;
         top: 20px;
         right: 20px;
-        background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#f44336' : '#2196F3'};
+        background: ${type === 'success' ? '#4CAF50' : type === 'error' ? '#f44336' : type === 'warning' ? '#FF9800' : '#2196F3'};
         color: white;
         padding: 12px 20px;
         border-radius: 8px;
@@ -388,6 +394,148 @@ function showNotification(message, type = 'success') {
         notifDiv.style.animation = 'slideOutRight 0.3s ease-out';
         setTimeout(() => notifDiv.remove(), 300);
     }, 3000);
+}
+
+// ===== EXPORT/IMPORT FUNCTIONS =====
+
+// Export vehicles to JSON file
+function exportVehiclesToJSON() {
+    try {
+        const vehiclesJson = storage.getItem(STORAGE_KEYS.VEHICLES);
+        const vehicles = vehiclesJson ? JSON.parse(vehiclesJson) : [];
+        
+        if (vehicles.length === 0) {
+            showNotification('⚠️ Нет машин для экспорта', 'warning');
+            return;
+        }
+        
+        // Create JSON content
+        const jsonContent = JSON.stringify(vehicles, null, 2);
+        
+        // Create blob
+        const blob = new Blob([jsonContent], { type: 'application/json' });
+        
+        // Create download link
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        const dateStr = new Date().toISOString().split('T')[0];
+        link.download = `gazelle-vehicles-${dateStr}.json`;
+        
+        // Trigger download
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+        
+        showNotification('✓ Экспортировано ' + vehicles.length + ' машин', 'success');
+        console.log('✓ Exported', vehicles.length, 'vehicles to JSON file');
+    } catch (error) {
+        console.error('Export error:', error);
+        showNotification('❌ Ошибка при экспорте', 'error');
+    }
+}
+
+// Import vehicles from JSON file
+function importVehiclesFromJSON() {
+    // Trigger file input
+    const fileInput = document.getElementById('importVehicleInput');
+    if (fileInput) {
+        fileInput.click();
+    } else {
+        console.error('Import file input not found');
+        showNotification('❌ Ошибка: элемент загрузки не найден', 'error');
+    }
+}
+
+// Handle file import
+function handleVehicleFileImport(event) {
+    const file = event.target.files[0];
+    
+    if (!file) return;
+    
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            const importedVehicles = JSON.parse(e.target.result);
+            
+            // Validate is array
+            if (!Array.isArray(importedVehicles)) {
+                throw new Error('Неверный формат JSON: ожидается массив');
+            }
+            
+            // Validate vehicle objects
+            for (const vehicle of importedVehicles) {
+                if (!vehicle.name || !vehicle.length_mm || !vehicle.width_mm || !vehicle.height_mm || !vehicle.max_weight_kg) {
+                    throw new Error('Неверная структура данных машины');
+                }
+            }
+            
+            // Get existing vehicles from storage
+            const existingJson = storage.getItem(STORAGE_KEYS.VEHICLES);
+            let existingVehicles = existingJson ? JSON.parse(existingJson) : [];
+            
+            // Merge: keep existing + add imported (skip duplicates by ID)
+            let addedCount = 0;
+            for (const vehicle of importedVehicles) {
+                // Check if vehicle with same ID already exists
+                const exists = existingVehicles.find(v => v.id === vehicle.id);
+                if (!exists) {
+                    // Ensure vehicle has all required fields
+                    const newVehicle = {
+                        id: vehicle.id || nextVehicleId++,
+                        name: vehicle.name,
+                        length_mm: vehicle.length_mm,
+                        width_mm: vehicle.width_mm,
+                        height_mm: vehicle.height_mm,
+                        max_weight_kg: vehicle.max_weight_kg,
+                        timestamp: vehicle.timestamp || new Date().toISOString(),
+                        is_default: vehicle.is_default || false
+                    };
+                    existingVehicles.push(newVehicle);
+                    addedCount++;
+                    
+                    // Update nextVehicleId if imported ID is higher
+                    if (newVehicle.id >= nextVehicleId) {
+                        nextVehicleId = newVehicle.id + 1;
+                    }
+                }
+            }
+            
+            // Save merged list to storage
+            storage.setItem(STORAGE_KEYS.VEHICLES, JSON.stringify(existingVehicles));
+            saveNextVehicleId();
+            
+            // Update in-memory array
+            vehicles = existingVehicles;
+            
+            // Update UI
+            updateVehicleList();
+            
+            if (addedCount > 0) {
+                showNotification('✓ Импортировано ' + addedCount + ' машин', 'success');
+                console.log('✓ Imported', addedCount, 'new vehicles');
+            } else {
+                showNotification('ℹ️ Все машины уже существуют', 'info');
+                console.log('ℹ️ No new vehicles to import (all duplicates)');
+            }
+            
+        } catch (error) {
+            console.error('Import error:', error);
+            showNotification('❌ Ошибка при импорте: ' + error.message, 'error');
+        }
+    };
+    
+    reader.onerror = function() {
+        console.error('File read error');
+        showNotification('❌ Ошибка чтения файла', 'error');
+    };
+    
+    reader.readAsText(file);
+    
+    // Reset input so same file can be imported again
+    event.target.value = '';
 }
 
 // ===== VEHICLE MANAGEMENT FUNCTIONS =====

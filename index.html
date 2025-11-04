@@ -37,6 +37,19 @@
                             </div>
                         </div>
                         
+                        <div style="display: flex; gap: 8px; margin-top: 12px; margin-bottom: 16px;">
+                            <button id="exportVehiclesBtn" class="btn btn--primary" onclick="exportVehiclesToJSON()" 
+                                style="flex: 1; background: #4CAF50;" title="Скачать все машины в JSON файл">
+                                📥 Экспортировать все авто
+                            </button>
+                            <button id="importVehiclesBtn" class="btn btn--primary" onclick="importVehiclesFromJSON()" 
+                                style="flex: 1; background: #2196F3;" title="Загрузить машины из JSON файла">
+                                📤 Импортировать авто
+                            </button>
+                        </div>
+                        
+                        <input type="file" id="importVehicleInput" accept=".json" style="display: none;">
+                        
                         <div class="vehicle-list-container">
                             <label class="form-label">Сохраненные авто:</label>
                             <div id="vehicleList" class="vehicle-list">
@@ -305,7 +318,5 @@
     </div>
     
     <script src="app.js"></script>
-<script src="./config.js"></script>
-<script src="./github-sync.js"></script>
 </body>
 </html>
